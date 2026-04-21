@@ -15,41 +15,45 @@ const trainingLogText = document.getElementById('trainingLogText');
 const liveStateText = document.getElementById('liveStateText');
 const btnRecalibrate = document.getElementById('btnRecalibrate');
 
-// Audio (p5.sound)
-let osc, fft;
-let micStream = null;     // raw MediaStream
-let micSourceNode = null; // Web Audio source node
+// Audio (Native Web Audio API - bypasses p5.FFT to avoid master-output contamination)
+let osc;                    // p5.Oscillator for the sweep tone
+let analyserNode = null;    // Native AnalyserNode connected ONLY to mic
+let micStream = null;
+let micSourceNode = null;
 let audioCtx = null;
 let audioStarted = false;
 let sweepInterval = null;
-const SWEEP_MIN = 12500; // 12.5 kHz
-const SWEEP_MAX = 18000; // 18.0 kHz
-const SWEEP_DUR_SEC = 0.05; // 50ms rapid sweep for stability
 
-// ML / Flow Variables
+const SWEEP_MIN = 12500;    // 12.5 kHz
+const SWEEP_MAX = 18000;    // 18.0 kHz
+const SWEEP_DUR_SEC = 0.05; // 50ms per sweep
+
+// Feature extraction: only use bins in our sweep frequency range
+let sweepBinStart = 0;
+let sweepBinEnd = 512;
+let featureCount = 512;
+
+// ML
 let nn;
 let isModelReady = false;
-let isClassifying = false;  // FIX: prevent 60fps classify() flooding
+let isClassifying = false;
 let stateList = [];
 let currentStateIndex = 0;
 let currentSamples = 0;
-const SAMPLES_NEEDED = 60; // 60 ticks * 50ms = 3 seconds per state (more data)
+const SAMPLES_NEEDED = 80;
 let recordingInterval = null;
 let isRecording = false;
-let lastSpectrum = [];  // FIX: single source of truth for spectrum
+let lastSpectrum = [];
 
-// Initialize p5.js
+// ------------------- p5.js setup ------------------- //
+
 function setup() {
   let cnv = createCanvas(windowWidth, 100);
   cnv.parent('fftContainer');
 
-  // Oscillator only — no p5.AudioIn (we bypass it below for echo cancellation)
+  // Oscillator for sweep output
   osc = new p5.Oscillator('sine');
   osc.amp(1.0);
-
-  // FFT — we'll connect it manually to the raw mic stream
-  fft = new p5.FFT(0.1, 1024);
-  // NOTE: do NOT call fft.setInput() here — we connect directly to fft.analyser below
 
   setupEvents();
 }
@@ -57,23 +61,50 @@ function setup() {
 function draw() {
   background(13, 17, 23);
 
-  // FIX: Single source of truth — analyze once per frame, share everywhere
-  lastSpectrum = fft.analyze();
-
-  // Draw FFT Spectrum Visually
-  noStroke();
-  fill(88, 166, 255);
-  for (let i = 0; i < lastSpectrum.length; i++) {
-    let x = map(i, 0, lastSpectrum.length, 0, width);
-    let h = -height + map(lastSpectrum[i], 0, 255, height, 0);
-    rect(x, height, width / lastSpectrum.length, h);
+  if (!analyserNode) {
+    // Show "waiting for audio" message
+    fill(100);
+    noStroke();
+    textSize(12);
+    textAlign(CENTER, CENTER);
+    text('Tap "Initialize & Start audio" to begin', width / 2, height / 2);
+    return;
   }
 
-  // FIX: Throttled inference — only classify when previous call has returned
+  // Read spectrum from native analyser
+  const freqData = new Uint8Array(analyserNode.frequencyBinCount);
+  analyserNode.getByteFrequencyData(freqData);
+  lastSpectrum = Array.from(freqData);
+
+  // Draw full spectrum, highlight the sweep range in green
+  noStroke();
+  for (let i = 0; i < lastSpectrum.length; i++) {
+    let x = map(i, 0, lastSpectrum.length, 0, width);
+    let barW = width / lastSpectrum.length;
+    let h = map(lastSpectrum[i], 0, 255, 0, height - 14);
+
+    if (i >= sweepBinStart && i < sweepBinEnd) {
+      fill(63, 185, 80); // green = sweep range
+    } else {
+      fill(30, 40, 50);  // dim = irrelevant range
+    }
+    rect(x, height, barW, -h);
+  }
+
+  // Signal level indicator (avg amplitude in sweep range)
+  const sweepSlice = lastSpectrum.slice(sweepBinStart, sweepBinEnd);
+  const signalLevel = sweepSlice.reduce((a,b) => a+b, 0) / sweepSlice.length;
+  fill(255, 200, 0);
+  noStroke();
+  textSize(10);
+  textAlign(LEFT, TOP);
+  text(`Signal: ${signalLevel.toFixed(0)}/255  |  Bins: ${sweepBinStart}-${sweepBinEnd}  |  Features: ${featureCount}`, 6, 2);
+
+  // Throttled inference in live mode
   if (isModelReady && !isClassifying && screenLive.classList.contains('active')) {
     isClassifying = true;
-    let inputs = lastSpectrum.map(v => v / 255.0);
-    nn.classify(inputs, handleClassification);
+    const features = sweepSlice.map(v => v / 255.0);
+    nn.classify(features, handleClassification);
   }
 }
 
@@ -81,24 +112,28 @@ function windowResized() {
   resizeCanvas(windowWidth, 100);
 }
 
-// ----------------- Sweep Logic ----------------- //
-
-function triggerSweep() {
-  if (!audioStarted) return;
-  // Snap down immediately
-  osc.freq(SWEEP_MIN, 0);
-  // Linear ramp up
-  osc.freq(SWEEP_MAX, SWEEP_DUR_SEC);
-}
+// ------------------- Audio Engine ------------------- //
 
 async function startAudioEngine() {
-  // 1. Resume Web Audio context (required by browser autoplay policy)
+  // Step 1: Resume AudioContext (mandatory user-gesture requirement)
   await userStartAudio();
   audioCtx = getAudioContext();
 
-  // 2. Get microphone with echo cancellation DISABLED.
-  //    This is critical — without this, the browser strips the very
-  //    speaker signal we are trying to measure from the mic input.
+  // Step 2: Compute sweep bin range from actual sample rate
+  const binCount = 1024; // analyserNode.fftSize = 2048 → frequencyBinCount = 1024
+  const nyquist = audioCtx.sampleRate / 2;
+  const hzPerBin = nyquist / binCount;
+  sweepBinStart = Math.max(0, Math.floor(SWEEP_MIN / hzPerBin) - 2);
+  sweepBinEnd   = Math.min(binCount, Math.ceil(SWEEP_MAX / hzPerBin) + 2);
+  featureCount  = sweepBinEnd - sweepBinStart;
+  console.log(`SR: ${audioCtx.sampleRate} Hz | Hz/bin: ${hzPerBin.toFixed(1)} | Sweep bins: ${sweepBinStart}-${sweepBinEnd} (${featureCount} features)`);
+
+  // Step 3: Create a native AnalyserNode — NOT connected to master output
+  analyserNode = audioCtx.createAnalyser();
+  analyserNode.fftSize = 2048;              // 1024 frequency bins
+  analyserNode.smoothingTimeConstant = 0.1; // Fast response
+
+  // Step 4: Request microphone with all processing disabled
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -108,47 +143,59 @@ async function startAudioEngine() {
         latency: 0
       }
     });
+    console.log('Microphone acquired with echo cancellation disabled.');
   } catch (err) {
-    console.warn('Could not disable echo cancellation, falling back:', err);
+    console.warn('Could not disable echo cancellation, falling back to default:', err);
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   }
 
-  // 3. Connect the raw mic stream directly into the FFT analyser node,
-  //    bypassing any p5.AudioIn processing.
+  // Step 5: Connect mic → analyser ONLY (no oscillator leaking into FFT)
   micSourceNode = audioCtx.createMediaStreamSource(micStream);
-  micSourceNode.connect(fft.analyser);
+  micSourceNode.connect(analyserNode);
+  // Do NOT connect analyserNode to audioCtx.destination (we don't want to hear the mic)
 
-  // 4. Start the oscillator sweep
+  // Step 6: Reinitialize ML model with correct feature count
+  const holes = parseInt(holeCountSelect.value);
+  stateList = generatePermutations(holes);
+  nn = ml5.neuralNetwork({
+    inputs: featureCount,
+    task: 'classification',
+    debug: false
+  });
+
+  // Step 7: Start the oscillator sweep
   osc.start();
   audioStarted = true;
-
   if (sweepInterval) clearInterval(sweepInterval);
   triggerSweep();
   sweepInterval = setInterval(triggerSweep, SWEEP_DUR_SEC * 1000);
 }
 
 function stopAudioEngine() {
-  if (sweepInterval) clearInterval(sweepInterval);
+  if (sweepInterval) { clearInterval(sweepInterval); sweepInterval = null; }
   osc.stop();
   if (micSourceNode) { micSourceNode.disconnect(); micSourceNode = null; }
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (micStream)     { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  analyserNode = null;
   audioStarted = false;
+  lastSpectrum = [];
 }
 
-// ----------------- Flow Management ----------------- //
+function triggerSweep() {
+  if (!audioStarted) return;
+  osc.freq(SWEEP_MIN, 0);           // instant snap to low end
+  osc.freq(SWEEP_MAX, SWEEP_DUR_SEC); // linear ramp to high end
+}
+
+// ------------------- Screen Management ------------------- //
 
 function showScreen(screenEl) {
-  // Hide all
   [screenWelcome, screenCalibrate, screenTrain, screenLive].forEach(s => {
     s.classList.remove('active');
     s.classList.add('hidden');
   });
-  // Show target
   screenEl.classList.remove('hidden');
-  // Small timeout to allow display:block to render before opacity fade
-  setTimeout(() => {
-    screenEl.classList.add('active');
-  }, 10);
+  setTimeout(() => screenEl.classList.add('active'), 10);
 }
 
 function generatePermutations(holes) {
@@ -159,41 +206,23 @@ function generatePermutations(holes) {
 }
 
 function setupEvents() {
-  // Screen 1: Start Wizard
-  btnStartWizard.addEventListener('click', () => {
-    const holes = parseInt(holeCountSelect.value);
-    stateList = generatePermutations(holes);
-    
-    // Initialize standard ML5 Neural Network
-    const options = {
-      inputs: 1024,
-      task: 'classification',
-      debug: false
-    };
-    nn = ml5.neuralNetwork(options);
-    
-    // Kickoff Audio
-    startAudioEngine();
-    
-    // Move to Calibration
+  btnStartWizard.addEventListener('click', async () => {
+    await startAudioEngine(); // startAudioEngine now sets stateList + nn
     currentStateIndex = 0;
     setupNextState();
     showScreen(screenCalibrate);
   });
 
-  // Screen 2: Record Button bindings
   const startBtnAction = (e) => { e.preventDefault(); startRecording(); };
-  const stopBtnAction = (e) => { e.preventDefault(); stopRecording(); };
+  const stopBtnAction  = (e) => { e.preventDefault(); stopRecording(); };
 
   btnRecordState.addEventListener('mousedown', startBtnAction);
   btnRecordState.addEventListener('touchstart', startBtnAction);
-  
-  btnRecordState.addEventListener('mouseup', stopBtnAction);
+  btnRecordState.addEventListener('mouseup',    stopBtnAction);
   btnRecordState.addEventListener('mouseleave', stopBtnAction);
-  btnRecordState.addEventListener('touchend', stopBtnAction);
-  btnRecordState.addEventListener('touchcancel', stopBtnAction);
+  btnRecordState.addEventListener('touchend',   stopBtnAction);
+  btnRecordState.addEventListener('touchcancel',stopBtnAction);
 
-  // Screen 4: Recalibrate
   btnRecalibrate.addEventListener('click', () => {
     isModelReady = false;
     stopAudioEngine();
@@ -201,7 +230,7 @@ function setupEvents() {
   });
 }
 
-// ----------------- Calibration Logic ----------------- //
+// ------------------- Calibration ------------------- //
 
 function setupNextState() {
   const targetClass = stateList[currentStateIndex];
@@ -209,23 +238,24 @@ function setupNextState() {
   currentSamples = 0;
   updateProgressUI();
   btnRecordState.disabled = false;
-  btnRecordState.textContent = "Hold to Calibrate State";
+  btnRecordState.textContent = 'Hold to Calibrate State';
   progressLabel.textContent = `Awaiting input for ${targetClass}...`;
 }
 
 function startRecording() {
   if (isRecording) return;
   isRecording = true;
-  btnRecordState.textContent = "Recording... Keep holding!";
-  progressLabel.textContent = `Capturing acoustic profile...`;
-  
+  btnRecordState.textContent = 'Recording... Keep holding!';
+  progressLabel.textContent = 'Capturing acoustic profile...';
+
   recordingInterval = setInterval(() => {
     if (!audioStarted || lastSpectrum.length === 0) return;
 
-    // FIX: Use lastSpectrum from draw() — no duplicate fft.analyze() call
-    let inputs = lastSpectrum.map(v => v / 255.0);
-    let target = [stateList[currentStateIndex]];
-    
+    // Extract only the sweep-range bins as features
+    const sweepSlice = lastSpectrum.slice(sweepBinStart, sweepBinEnd);
+    const inputs = sweepSlice.map(v => v / 255.0);
+    const target = [stateList[currentStateIndex]];
+
     nn.addData(inputs, target);
     currentSamples++;
     updateProgressUI();
@@ -241,58 +271,41 @@ function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   clearInterval(recordingInterval);
-  
-  // If they stopped before it was done, prompt them to continue
   if (currentSamples > 0 && currentSamples < SAMPLES_NEEDED) {
-    btnRecordState.textContent = "Hold to Resume Calibration";
-    progressLabel.textContent = "Please hold until the bar is full!";
+    btnRecordState.textContent = 'Hold to Resume Calibration';
+    progressLabel.textContent = 'Please hold until the bar is full!';
   }
 }
 
 function updateProgressUI() {
-  const percent = Math.min((currentSamples / SAMPLES_NEEDED) * 100, 100);
-  captureProgressBar.style.width = `${percent}%`;
+  const pct = Math.min((currentSamples / SAMPLES_NEEDED) * 100, 100);
+  captureProgressBar.style.width = `${pct}%`;
 }
 
 function handleStateComplete() {
   btnRecordState.disabled = true;
-  btnRecordState.textContent = "Great!";
-  progressLabel.textContent = "Captured successfully.";
-  
+  btnRecordState.textContent = 'Great!';
+  progressLabel.textContent = 'Captured successfully.';
   currentStateIndex++;
-  
+
   if (currentStateIndex < stateList.length) {
-    // Slight pause before continuing
-    setTimeout(() => {
-      setupNextState();
-    }, 1000);
+    setTimeout(setupNextState, 1000);
   } else {
-    // All done! Transition to training automatically.
-    setTimeout(() => {
-      startTraining();
-    }, 1000);
+    setTimeout(startTraining, 1000);
   }
 }
 
-// ----------------- ML Training ----------------- //
+// ------------------- Training ------------------- //
 
 function startTraining() {
   showScreen(screenTrain);
-  trainingLogText.textContent = "Normalizing acoustic data...";
-  
+  trainingLogText.textContent = 'Normalizing acoustic data...';
   nn.normalizeData();
-  
-  const trainingOptions = {
-    epochs: 40,
-    batchSize: 12
-  };
-  
-  trainingLogText.textContent = "Optimizing neural weights...";
-  nn.train(trainingOptions, whileTraining, finishedTraining);
+  nn.train({ epochs: 50, batchSize: 16 }, whileTraining, finishedTraining);
 }
 
 function whileTraining(epoch, loss) {
-  trainingLogText.textContent = `Training Epoch ${epoch + 1}/40 (Loss: ${loss.loss.toFixed(3)})`;
+  trainingLogText.textContent = `Epoch ${epoch + 1}/50 — Loss: ${loss.loss.toFixed(4)}`;
 }
 
 function finishedTraining() {
@@ -300,19 +313,18 @@ function finishedTraining() {
   showScreen(screenLive);
 }
 
-// ----------------- ML Inference ----------------- //
+// ------------------- Inference ------------------- //
 
 function handleClassification(error, results) {
-  isClassifying = false;  // FIX: unblock the next classify() call
+  isClassifying = false;
   if (error || !isModelReady) return;
-  
   if (results && results.length > 0) {
     const best = results[0];
     if (best.confidence > 0.5) {
       liveStateText.textContent = best.label;
       liveStateText.style.color = 'var(--text-main)';
     } else {
-      liveStateText.textContent = "---";
+      liveStateText.textContent = '---';
       liveStateText.style.color = 'var(--text-muted)';
     }
   }
