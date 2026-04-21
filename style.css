@@ -1,0 +1,321 @@
+:root {
+  --bg-color: #0d1117;
+  --panel-bg: rgba(22, 27, 34, 0.8);
+  --border-color: rgba(48, 54, 61, 0.8);
+  --text-main: #c9d1d9;
+  --text-muted: #8b949e;
+  --accent-color: #58a6ff;
+  --accent-hover: #1f6feb;
+  --danger: #f85149;
+  --danger-hover: #da3633;
+  --success: #3fb950;
+  --glow: rgba(88, 166, 255, 0.3);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none; /* Mobile touch optimization */
+  -webkit-tap-highlight-color: transparent;
+}
+
+body, html {
+  font-family: 'Outfit', sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  height: 100%;
+  width: 100%;
+  overflow: hidden; /* App-like feel */
+  background-image: 
+    radial-gradient(circle at top right, rgba(31, 111, 235, 0.15), transparent 40%),
+    radial-gradient(circle at bottom left, rgba(46, 160, 67, 0.1), transparent 40%);
+}
+
+.wizard-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  padding: 2rem 1.5rem 130px; /* bottom padding clears the FFT bar */
+}
+
+.screen.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.screen.hidden {
+  display: none;
+}
+
+.screen-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.center-content {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.screen-footer {
+  padding-top: 1rem;
+  padding-bottom: 2rem; /* iPhone bottom margin */
+}
+
+h1 {
+  font-size: 3rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent-color), #2ea043);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 0.2rem;
+  line-height: 1.1;
+}
+
+h2.section-title {
+  font-size: 2rem;
+  color: #fff;
+  margin-bottom: 0.5rem;
+}
+
+.success-text {
+  color: var(--success) !important;
+}
+
+.subtitle {
+  font-size: 1.1rem;
+  color: var(--text-muted);
+}
+
+.margin-top-lg { margin-top: 2rem; }
+.margin-top-md { margin-top: 1rem; }
+.text-muted { color: var(--text-muted); }
+
+.form-group label {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-main);
+}
+
+.large-select {
+  width: 100%;
+  padding: 1rem;
+  font-size: 1.2rem;
+  background: var(--panel-bg);
+  border: 2px solid var(--border-color);
+  color: #fff;
+  border-radius: 12px;
+  outline: none;
+  appearance: none; /* Native look stripping */
+}
+
+.large-select:focus {
+  border-color: var(--accent-color);
+}
+
+.info-box {
+  background: rgba(88, 166, 255, 0.1);
+  border-left: 4px solid var(--accent-color);
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.target-state-display {
+  background: #000;
+  border: 2px solid var(--accent-color);
+  margin: 1.5rem 0;
+  padding: 2rem 1rem;
+  width: 100%;
+  border-radius: 16px;
+  box-shadow: 0 0 20px var(--glow);
+}
+
+#targetStateText {
+  font-size: 3.5rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 4px;
+}
+
+.live-target-display {
+  background: #000;
+  border: 2px solid var(--success);
+  margin: 2rem 0;
+  padding: 3rem 1rem;
+  width: 100%;
+  border-radius: 20px;
+  box-shadow: 0 0 30px rgba(63, 185, 80, 0.3);
+}
+
+#liveStateText {
+  font-size: 4rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 4px;
+}
+
+.pulse-glow {
+  animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 20px rgba(63, 185, 80, 0.2); }
+  50% { box-shadow: 0 0 40px rgba(63, 185, 80, 0.5); }
+  100% { box-shadow: 0 0 20px rgba(63, 185, 80, 0.2); }
+}
+
+.progress-container {
+  width: 100%;
+  text-align: left;
+}
+
+#progressLabel {
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.progress-bar-bg {
+  width: 100%;
+  height: 12px;
+  background: #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-color);
+  transition: width 0.1s linear;
+}
+
+/* Base button styles */
+.btn {
+  font-family: inherit;
+  font-size: 1.2rem;
+  font-weight: 600;
+  padding: 1.2rem;
+  border-radius: 16px;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s ease;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.full-width {
+  width: 100%;
+}
+
+.primary-btn {
+  background: var(--accent-color);
+  color: #000;
+  box-shadow: 0 4px 15px rgba(88, 166, 255, 0.4);
+}
+
+.danger-btn {
+  background: var(--danger);
+  color: #fff;
+  box-shadow: 0 4px 15px rgba(248, 81, 73, 0.4);
+}
+
+.danger-btn:active { background: var(--danger-hover); }
+
+.secondary-btn {
+  background: transparent;
+  color: var(--text-main);
+  border: 2px solid var(--border-color);
+}
+
+.pulse-anim {
+  animation: throb 2s infinite;
+}
+
+@keyframes throb {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+.mini-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(255,255,255,0.05);
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.9rem;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.online .dot { background: var(--success); box-shadow: 0 0 8px var(--success); }
+
+/* Loader CSS */
+.spinner {
+  width: 60px;
+  height: 60px;
+  border: 6px solid rgba(88, 166, 255, 0.2);
+  border-top: 6px solid var(--accent-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 1rem auto;
+}
+
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+/* FFT Spectrum Viewer */
+.fft-wrapper {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: rgba(13, 17, 23, 0.9);
+  border-top: 1px solid var(--border-color);
+  z-index: 10;
+  pointer-events: none; /* CRITICAL: don't block taps on buttons above */
+}
+
+.fft-header {
+  font-size: 0.8rem;
+  text-align: center;
+  color: var(--text-muted);
+  padding: 4px 0;
+  letter-spacing: 1px;
+  background: #000;
+}
+
+#fftContainer canvas {
+  display: block;
+  width: 100% !important;
+  height: 100px !important;
+  pointer-events: none; /* Also disable on the canvas itself */
+}

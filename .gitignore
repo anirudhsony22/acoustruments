@@ -1,0 +1,5 @@
+# Ignore temp/scratch files
+pdf_content.txt
+
+# macOS
+.DS_Store

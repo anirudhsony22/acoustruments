@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+  <title>Acoustruments Wizard</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  
+  <!-- p5.js and extensions -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+  
+  <!-- ml5.js stable v0.12.2 -->
+  <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  
+  <div class="wizard-container">
+    
+    <!-- Screen 1: Welcome & Setup -->
+    <div id="screen-welcome" class="screen active">
+      <div class="screen-content">
+        <h1>Welcome</h1>
+        <p class="subtitle">Acoustruments Initial Setup</p>
+
+        <div class="form-group margin-top-lg">
+          <label for="holeCount">Select Hardware Holes:</label>
+          <select id="holeCount" class="large-select">
+            <option value="1">1 Hole (2 states)</option>
+            <option value="2">2 Holes (4 states)</option>
+            <option value="3" selected>3 Holes (8 states)</option>
+          </select>
+        </div>
+        
+        <div class="info-box margin-top-md">
+          <p>Please attach your 3D printed instrument. We will automatically calibrate its acoustic profile using a continuous high-frequency sweep.</p>
+        </div>
+      </div>
+      
+      <div class="screen-footer">
+        <button id="btnStartWizard" class="btn primary-btn full-width">Initialize & Start audio</button>
+      </div>
+    </div>
+
+    <!-- Screen 2: Step-by-Step Calibration -->
+    <div id="screen-calibrate" class="screen hidden">
+      <div class="screen-content center-content">
+        <h2 class="section-title">Calibration</h2>
+        <p id="calibrationInstruction" class="instruction">Set your instrument to:</p>
+        
+        <div class="target-state-display">
+          <span id="targetStateText">O-O-O</span>
+        </div>
+        
+        <div class="progress-container">
+          <p id="progressLabel">Waiting for you to begin...</p>
+          <div class="progress-bar-bg">
+            <div id="captureProgressBar" class="progress-fill" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="screen-footer">
+        <button id="btnRecordState" class="btn danger-btn full-width pulse-anim">Hold to Calibrate State</button>
+      </div>
+    </div>
+
+    <!-- Screen 3: Training -->
+    <div id="screen-train" class="screen hidden">
+      <div class="screen-content center-content">
+        <h2 class="section-title">Training Neural Network</h2>
+        <div class="loader spinner"></div>
+        <p id="trainingLogText" class="margin-top-md text-muted">Calculating features...</p>
+      </div>
+    </div>
+
+    <!-- Screen 4: Live Inference -->
+    <div id="screen-live" class="screen hidden">
+      <div class="screen-content center-content">
+        <h2 class="section-title success-text">System Active</h2>
+        <p class="subtitle">Acoustruments Live Status</p>
+        
+        <div class="live-target-display pulse-glow">
+          <span id="liveStateText">---</span>
+        </div>
+        
+        <div id="audioStatusIndicator" class="mini-status online margin-top-md">
+          <span class="dot"></span> Continuous Sweep Active
+        </div>
+      </div>
+      
+      <div class="screen-footer">
+        <button id="btnRecalibrate" class="btn secondary-btn full-width">Recalibrate System</button>
+      </div>
+    </div>
+
+    <!-- Live FFT Analysis Display -->
+    <div class="fft-wrapper">
+      <div class="fft-header">Real-Time Acoustic Spectrum</div>
+      <div id="fftContainer"></div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

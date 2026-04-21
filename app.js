@@ -1,0 +1,295 @@
+// Wizard Screens
+const screenWelcome = document.getElementById('screen-welcome');
+const screenCalibrate = document.getElementById('screen-calibrate');
+const screenTrain = document.getElementById('screen-train');
+const screenLive = document.getElementById('screen-live');
+
+// UI Elements
+const holeCountSelect = document.getElementById('holeCount');
+const btnStartWizard = document.getElementById('btnStartWizard');
+const targetStateText = document.getElementById('targetStateText');
+const btnRecordState = document.getElementById('btnRecordState');
+const progressLabel = document.getElementById('progressLabel');
+const captureProgressBar = document.getElementById('captureProgressBar');
+const trainingLogText = document.getElementById('trainingLogText');
+const liveStateText = document.getElementById('liveStateText');
+const btnRecalibrate = document.getElementById('btnRecalibrate');
+
+// Audio (p5.sound)
+let osc, mic, fft;
+let audioStarted = false;
+let sweepInterval = null;
+const SWEEP_MIN = 12500; // 12.5 kHz
+const SWEEP_MAX = 18000; // 18.0 kHz
+const SWEEP_DUR_SEC = 0.05; // 50ms rapid sweep for stability
+
+// ML / Flow Variables
+let nn;
+let isModelReady = false;
+let stateList = [];
+let currentStateIndex = 0;
+let currentSamples = 0;
+const SAMPLES_NEEDED = 40; // 40 ticks * 50ms = 2 seconds per state
+let recordingInterval = null;
+let isRecording = false;
+
+// Initialize p5.js
+function setup() {
+  let cnv = createCanvas(windowWidth, 100);
+  cnv.parent('fftContainer');
+
+  // Initialize Oscillator
+  osc = new p5.Oscillator('sine');
+  osc.amp(1.0); 
+
+  // Initialize Microphone
+  mic = new p5.AudioIn();
+
+  // Initialize FFT
+  fft = new p5.FFT(0.8, 1024);
+  fft.setInput(mic);
+
+  setupEvents();
+}
+
+function draw() {
+  background(13, 17, 23);
+
+  let spectrum = fft.analyze();
+
+  // Draw FFT Spectrum Visually
+  noStroke();
+  fill(88, 166, 255); // Accent color
+  for (let i = 0; i < spectrum.length; i++) {
+    let x = map(i, 0, spectrum.length, 0, width);
+    let h = -height + map(spectrum[i], 0, 255, height, 0);
+    rect(x, height, width / spectrum.length, h);
+  }
+
+  // Rapid inference runs in live mode
+  if (isModelReady && screenLive.classList.contains('active')) {
+    let inputs = spectrum.map(v => v / 255.0);
+    nn.classify(inputs, handleClassification);
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, 100);
+}
+
+// ----------------- Sweep Logic ----------------- //
+
+function triggerSweep() {
+  if (!audioStarted) return;
+  // Snap down immediately
+  osc.freq(SWEEP_MIN, 0);
+  // Linear ramp up
+  osc.freq(SWEEP_MAX, SWEEP_DUR_SEC);
+}
+
+function startAudioEngine() {
+  userStartAudio().then(() => {
+    mic.start();
+    osc.start();
+    audioStarted = true;
+    
+    // Start continuous sweeping loop
+    if (sweepInterval) clearInterval(sweepInterval);
+    triggerSweep();
+    sweepInterval = setInterval(triggerSweep, SWEEP_DUR_SEC * 1000);
+  });
+}
+
+function stopAudioEngine() {
+  if (sweepInterval) clearInterval(sweepInterval);
+  osc.stop();
+  mic.stop();
+  audioStarted = false;
+}
+
+// ----------------- Flow Management ----------------- //
+
+function showScreen(screenEl) {
+  // Hide all
+  [screenWelcome, screenCalibrate, screenTrain, screenLive].forEach(s => {
+    s.classList.remove('active');
+    s.classList.add('hidden');
+  });
+  // Show target
+  screenEl.classList.remove('hidden');
+  // Small timeout to allow display:block to render before opacity fade
+  setTimeout(() => {
+    screenEl.classList.add('active');
+  }, 10);
+}
+
+function generatePermutations(holes) {
+  if (holes === 1) return ['O', 'C'];
+  if (holes === 2) return ['OO', 'OC', 'CO', 'CC'];
+  if (holes === 3) return ['OOO', 'OOC', 'OCO', 'OCC', 'COO', 'COC', 'CCO', 'CCC'];
+  return [];
+}
+
+function setupEvents() {
+  // Screen 1: Start Wizard
+  btnStartWizard.addEventListener('click', () => {
+    const holes = parseInt(holeCountSelect.value);
+    stateList = generatePermutations(holes);
+    
+    // Initialize standard ML5 Neural Network
+    const options = {
+      inputs: 1024,
+      task: 'classification',
+      debug: false
+    };
+    nn = ml5.neuralNetwork(options);
+    
+    // Kickoff Audio
+    startAudioEngine();
+    
+    // Move to Calibration
+    currentStateIndex = 0;
+    setupNextState();
+    showScreen(screenCalibrate);
+  });
+
+  // Screen 2: Record Button bindings
+  const startBtnAction = (e) => { e.preventDefault(); startRecording(); };
+  const stopBtnAction = (e) => { e.preventDefault(); stopRecording(); };
+
+  btnRecordState.addEventListener('mousedown', startBtnAction);
+  btnRecordState.addEventListener('touchstart', startBtnAction);
+  
+  btnRecordState.addEventListener('mouseup', stopBtnAction);
+  btnRecordState.addEventListener('mouseleave', stopBtnAction);
+  btnRecordState.addEventListener('touchend', stopBtnAction);
+  btnRecordState.addEventListener('touchcancel', stopBtnAction);
+
+  // Screen 4: Recalibrate
+  btnRecalibrate.addEventListener('click', () => {
+    isModelReady = false;
+    stopAudioEngine();
+    showScreen(screenWelcome);
+  });
+}
+
+// ----------------- Calibration Logic ----------------- //
+
+function setupNextState() {
+  const targetClass = stateList[currentStateIndex];
+  targetStateText.textContent = targetClass;
+  currentSamples = 0;
+  updateProgressUI();
+  btnRecordState.disabled = false;
+  btnRecordState.textContent = "Hold to Calibrate State";
+  progressLabel.textContent = `Awaiting input for ${targetClass}...`;
+}
+
+function startRecording() {
+  if (isRecording) return;
+  isRecording = true;
+  btnRecordState.textContent = "Recording... Keep holding!";
+  progressLabel.textContent = `Capturing acoustic profile...`;
+  
+  recordingInterval = setInterval(() => {
+    if (!audioStarted) return;
+
+    // Grab current FFT snapshot
+    let spectrum = fft.analyze();
+    let inputs = spectrum.map(v => v / 255.0);
+    let target = [stateList[currentStateIndex]];
+    
+    nn.addData(inputs, target);
+    currentSamples++;
+    updateProgressUI();
+
+    if (currentSamples >= SAMPLES_NEEDED) {
+      stopRecording();
+      handleStateComplete();
+    }
+  }, 50); // Sample every 50ms during the continuous sweep
+}
+
+function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  clearInterval(recordingInterval);
+  
+  // If they stopped before it was done, prompt them to continue
+  if (currentSamples > 0 && currentSamples < SAMPLES_NEEDED) {
+    btnRecordState.textContent = "Hold to Resume Calibration";
+    progressLabel.textContent = "Please hold until the bar is full!";
+  }
+}
+
+function updateProgressUI() {
+  const percent = Math.min((currentSamples / SAMPLES_NEEDED) * 100, 100);
+  captureProgressBar.style.width = `${percent}%`;
+}
+
+function handleStateComplete() {
+  btnRecordState.disabled = true;
+  btnRecordState.textContent = "Great!";
+  progressLabel.textContent = "Captured successfully.";
+  
+  currentStateIndex++;
+  
+  if (currentStateIndex < stateList.length) {
+    // Slight pause before continuing
+    setTimeout(() => {
+      setupNextState();
+    }, 1000);
+  } else {
+    // All done! Transition to training automatically.
+    setTimeout(() => {
+      startTraining();
+    }, 1000);
+  }
+}
+
+// ----------------- ML Training ----------------- //
+
+function startTraining() {
+  showScreen(screenTrain);
+  trainingLogText.textContent = "Normalizing acoustic data...";
+  
+  nn.normalizeData();
+  
+  const trainingOptions = {
+    epochs: 40,
+    batchSize: 12
+  };
+  
+  trainingLogText.textContent = "Optimizing neural weights...";
+  nn.train(trainingOptions, whileTraining, finishedTraining);
+}
+
+function whileTraining(epoch, loss) {
+  trainingLogText.textContent = `Training Epoch ${epoch + 1}/40 (Loss: ${loss.loss.toFixed(3)})`;
+}
+
+function finishedTraining() {
+  isModelReady = true;
+  showScreen(screenLive);
+}
+
+// ----------------- ML Inference ----------------- //
+
+function handleClassification(error, results) {
+  if (error || !isModelReady) return;
+  
+  if (results && results.length > 0) {
+    const best = results[0];
+    
+    // Optional: add temporal smoothing here if flickering occurs, 
+    // but the rapid sweep usually produces stable features.
+    
+    if (best.confidence > 0.5) {
+      liveStateText.textContent = best.label;
+      liveStateText.style.color = 'var(--text-main)';
+    } else {
+      liveStateText.textContent = "---"; // Unknown / transitional
+      liveStateText.style.color = 'var(--text-muted)';
+    }
+  }
+}
