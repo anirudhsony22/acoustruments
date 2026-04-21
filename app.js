@@ -26,12 +26,14 @@ const SWEEP_DUR_SEC = 0.05; // 50ms rapid sweep for stability
 // ML / Flow Variables
 let nn;
 let isModelReady = false;
+let isClassifying = false;  // FIX: prevent 60fps classify() flooding
 let stateList = [];
 let currentStateIndex = 0;
 let currentSamples = 0;
-const SAMPLES_NEEDED = 40; // 40 ticks * 50ms = 2 seconds per state
+const SAMPLES_NEEDED = 60; // 60 ticks * 50ms = 3 seconds per state (more data)
 let recordingInterval = null;
 let isRecording = false;
+let lastSpectrum = [];  // FIX: single source of truth for spectrum
 
 // Initialize p5.js
 function setup() {
@@ -45,8 +47,8 @@ function setup() {
   // Initialize Microphone
   mic = new p5.AudioIn();
 
-  // Initialize FFT
-  fft = new p5.FFT(0.8, 1024);
+  // Initialize FFT — low smoothing (0.1) for fast, accurate response
+  fft = new p5.FFT(0.1, 1024);
   fft.setInput(mic);
 
   setupEvents();
@@ -55,20 +57,22 @@ function setup() {
 function draw() {
   background(13, 17, 23);
 
-  let spectrum = fft.analyze();
+  // FIX: Single source of truth — analyze once per frame, share everywhere
+  lastSpectrum = fft.analyze();
 
   // Draw FFT Spectrum Visually
   noStroke();
-  fill(88, 166, 255); // Accent color
-  for (let i = 0; i < spectrum.length; i++) {
-    let x = map(i, 0, spectrum.length, 0, width);
-    let h = -height + map(spectrum[i], 0, 255, height, 0);
-    rect(x, height, width / spectrum.length, h);
+  fill(88, 166, 255);
+  for (let i = 0; i < lastSpectrum.length; i++) {
+    let x = map(i, 0, lastSpectrum.length, 0, width);
+    let h = -height + map(lastSpectrum[i], 0, 255, height, 0);
+    rect(x, height, width / lastSpectrum.length, h);
   }
 
-  // Rapid inference runs in live mode
-  if (isModelReady && screenLive.classList.contains('active')) {
-    let inputs = spectrum.map(v => v / 255.0);
+  // FIX: Throttled inference — only classify when previous call has returned
+  if (isModelReady && !isClassifying && screenLive.classList.contains('active')) {
+    isClassifying = true;
+    let inputs = lastSpectrum.map(v => v / 255.0);
     nn.classify(inputs, handleClassification);
   }
 }
@@ -192,11 +196,10 @@ function startRecording() {
   progressLabel.textContent = `Capturing acoustic profile...`;
   
   recordingInterval = setInterval(() => {
-    if (!audioStarted) return;
+    if (!audioStarted || lastSpectrum.length === 0) return;
 
-    // Grab current FFT snapshot
-    let spectrum = fft.analyze();
-    let inputs = spectrum.map(v => v / 255.0);
+    // FIX: Use lastSpectrum from draw() — no duplicate fft.analyze() call
+    let inputs = lastSpectrum.map(v => v / 255.0);
     let target = [stateList[currentStateIndex]];
     
     nn.addData(inputs, target);
@@ -207,7 +210,7 @@ function startRecording() {
       stopRecording();
       handleStateComplete();
     }
-  }, 50); // Sample every 50ms during the continuous sweep
+  }, 50);
 }
 
 function stopRecording() {
@@ -276,19 +279,16 @@ function finishedTraining() {
 // ----------------- ML Inference ----------------- //
 
 function handleClassification(error, results) {
+  isClassifying = false;  // FIX: unblock the next classify() call
   if (error || !isModelReady) return;
   
   if (results && results.length > 0) {
     const best = results[0];
-    
-    // Optional: add temporal smoothing here if flickering occurs, 
-    // but the rapid sweep usually produces stable features.
-    
     if (best.confidence > 0.5) {
       liveStateText.textContent = best.label;
       liveStateText.style.color = 'var(--text-main)';
     } else {
-      liveStateText.textContent = "---"; // Unknown / transitional
+      liveStateText.textContent = "---";
       liveStateText.style.color = 'var(--text-muted)';
     }
   }
