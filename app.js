@@ -16,7 +16,10 @@ const liveStateText = document.getElementById('liveStateText');
 const btnRecalibrate = document.getElementById('btnRecalibrate');
 
 // Audio (p5.sound)
-let osc, mic, fft;
+let osc, fft;
+let micStream = null;     // raw MediaStream
+let micSourceNode = null; // Web Audio source node
+let audioCtx = null;
 let audioStarted = false;
 let sweepInterval = null;
 const SWEEP_MIN = 12500; // 12.5 kHz
@@ -40,16 +43,13 @@ function setup() {
   let cnv = createCanvas(windowWidth, 100);
   cnv.parent('fftContainer');
 
-  // Initialize Oscillator
+  // Oscillator only — no p5.AudioIn (we bypass it below for echo cancellation)
   osc = new p5.Oscillator('sine');
-  osc.amp(1.0); 
+  osc.amp(1.0);
 
-  // Initialize Microphone
-  mic = new p5.AudioIn();
-
-  // Initialize FFT — low smoothing (0.1) for fast, accurate response
+  // FFT — we'll connect it manually to the raw mic stream
   fft = new p5.FFT(0.1, 1024);
-  fft.setInput(mic);
+  // NOTE: do NOT call fft.setInput() here — we connect directly to fft.analyser below
 
   setupEvents();
 }
@@ -91,23 +91,47 @@ function triggerSweep() {
   osc.freq(SWEEP_MAX, SWEEP_DUR_SEC);
 }
 
-function startAudioEngine() {
-  userStartAudio().then(() => {
-    mic.start();
-    osc.start();
-    audioStarted = true;
-    
-    // Start continuous sweeping loop
-    if (sweepInterval) clearInterval(sweepInterval);
-    triggerSweep();
-    sweepInterval = setInterval(triggerSweep, SWEEP_DUR_SEC * 1000);
-  });
+async function startAudioEngine() {
+  // 1. Resume Web Audio context (required by browser autoplay policy)
+  await userStartAudio();
+  audioCtx = getAudioContext();
+
+  // 2. Get microphone with echo cancellation DISABLED.
+  //    This is critical — without this, the browser strips the very
+  //    speaker signal we are trying to measure from the mic input.
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        latency: 0
+      }
+    });
+  } catch (err) {
+    console.warn('Could not disable echo cancellation, falling back:', err);
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+
+  // 3. Connect the raw mic stream directly into the FFT analyser node,
+  //    bypassing any p5.AudioIn processing.
+  micSourceNode = audioCtx.createMediaStreamSource(micStream);
+  micSourceNode.connect(fft.analyser);
+
+  // 4. Start the oscillator sweep
+  osc.start();
+  audioStarted = true;
+
+  if (sweepInterval) clearInterval(sweepInterval);
+  triggerSweep();
+  sweepInterval = setInterval(triggerSweep, SWEEP_DUR_SEC * 1000);
 }
 
 function stopAudioEngine() {
   if (sweepInterval) clearInterval(sweepInterval);
   osc.stop();
-  mic.stop();
+  if (micSourceNode) { micSourceNode.disconnect(); micSourceNode = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   audioStarted = false;
 }
 
