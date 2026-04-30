@@ -44,6 +44,9 @@ const SAMPLES_NEEDED = 80;
 let recordingInterval = null;
 let isRecording = false;
 let lastSpectrum = [];
+let spectrumBuffer = []; // Buffer for temporal averaging
+const AVG_WINDOW = 5;    // Average last 5 frames for stability
+const REDUCED_BINS = 64; // Reduce feature count for better generalization
 
 // ------------------- p5.js setup ------------------- //
 
@@ -74,9 +77,24 @@ function draw() {
   // Read spectrum from native analyser
   const freqData = new Uint8Array(analyserNode.frequencyBinCount);
   analyserNode.getByteFrequencyData(freqData);
-  lastSpectrum = Array.from(freqData);
+  const currentFrame = Array.from(freqData);
 
-  // Draw full spectrum, highlight the sweep range in green
+  // Temporal Averaging: Maintain a sliding window of frames
+  spectrumBuffer.push(currentFrame);
+  if (spectrumBuffer.length > AVG_WINDOW) spectrumBuffer.shift();
+
+  // Compute the average spectrum
+  lastSpectrum = new Array(currentFrame.length).fill(0);
+  for (let frame of spectrumBuffer) {
+    for (let i = 0; i < frame.length; i++) {
+      lastSpectrum[i] += frame[i];
+    }
+  }
+  for (let i = 0; i < lastSpectrum.length; i++) {
+    lastSpectrum[i] /= spectrumBuffer.length;
+  }
+
+  // Draw spectrum visually
   noStroke();
   for (let i = 0; i < lastSpectrum.length; i++) {
     let x = map(i, 0, lastSpectrum.length, 0, width);
@@ -84,28 +102,49 @@ function draw() {
     let h = map(lastSpectrum[i], 0, 255, 0, height - 14);
 
     if (i >= sweepBinStart && i < sweepBinEnd) {
-      fill(63, 185, 80); // green = sweep range
+      fill(63, 185, 80);
     } else {
-      fill(30, 40, 50);  // dim = irrelevant range
+      fill(30, 40, 50);
     }
     rect(x, height, barW, -h);
   }
 
-  // Signal level indicator (avg amplitude in sweep range)
+  // Signal level indicator
   const sweepSlice = lastSpectrum.slice(sweepBinStart, sweepBinEnd);
-  const signalLevel = sweepSlice.reduce((a,b) => a+b, 0) / sweepSlice.length;
+  const signalLevel = sweepSlice.reduce((a,b) => a+b, 0) / (sweepSlice.length || 1);
   fill(255, 200, 0);
   noStroke();
   textSize(10);
   textAlign(LEFT, TOP);
-  text(`Signal: ${signalLevel.toFixed(0)}/255  |  Bins: ${sweepBinStart}-${sweepBinEnd}  |  Features: ${featureCount}`, 6, 2);
+  text(`Signal: ${signalLevel.toFixed(0)}/255 | Averaging: ${spectrumBuffer.length} frames | Features: ${REDUCED_BINS}`, 6, 2);
 
   // Throttled inference in live mode
   if (isModelReady && !isClassifying && screenLive.classList.contains('active')) {
     isClassifying = true;
-    const features = sweepSlice.map(v => v / 255.0);
+    const features = getProcessedFeatures(lastSpectrum);
     nn.classify(features, handleClassification);
   }
+}
+
+// Function to reduce FFT bins into super-bins for better ML generalization
+function getProcessedFeatures(spectrum) {
+  const sweepSlice = spectrum.slice(sweepBinStart, sweepBinEnd);
+  const binSize = Math.floor(sweepSlice.length / REDUCED_BINS);
+  let reduced = [];
+
+  for (let i = 0; i < REDUCED_BINS; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let j = 0; j < binSize; j++) {
+      let idx = i * binSize + j;
+      if (idx < sweepSlice.length) {
+        sum += sweepSlice[idx];
+        count++;
+      }
+    }
+    reduced.push((sum / (count || 1)) / 255.0);
+  }
+  return reduced;
 }
 
 function windowResized() {
@@ -154,11 +193,11 @@ async function startAudioEngine() {
   micSourceNode.connect(analyserNode);
   // Do NOT connect analyserNode to audioCtx.destination (we don't want to hear the mic)
 
-  // Step 6: Reinitialize ML model with correct feature count
+  // Step 6: Reinitialize ML model with reduced feature count
   const holes = parseInt(holeCountSelect.value);
   stateList = generatePermutations(holes);
   nn = ml5.neuralNetwork({
-    inputs: featureCount,
+    inputs: REDUCED_BINS,
     task: 'classification',
     debug: false
   });
@@ -251,9 +290,8 @@ function startRecording() {
   recordingInterval = setInterval(() => {
     if (!audioStarted || lastSpectrum.length === 0) return;
 
-    // Extract only the sweep-range bins as features
-    const sweepSlice = lastSpectrum.slice(sweepBinStart, sweepBinEnd);
-    const inputs = sweepSlice.map(v => v / 255.0);
+    // Extract processed features
+    const inputs = getProcessedFeatures(lastSpectrum);
     const target = [stateList[currentStateIndex]];
 
     nn.addData(inputs, target);
