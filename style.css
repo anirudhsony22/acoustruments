@@ -32,6 +32,19 @@ body, html {
     radial-gradient(circle at bottom left, rgba(46, 160, 67, 0.1), transparent 40%);
 }
 
+#versionBadge {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 8px;
+  border-radius: 4px;
+  z-index: 9999;
+  pointer-events: none;
+}
+
 .wizard-container {
   position: relative;
   width: 100%;

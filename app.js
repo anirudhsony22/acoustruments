@@ -45,8 +45,10 @@ let recordingInterval = null;
 let isRecording = false;
 let lastSpectrum = [];
 let spectrumBuffer = []; // Buffer for temporal averaging
-const AVG_WINDOW = 5;    // Average last 5 frames for stability
+const AVG_WINDOW = 10;   // Increased to 10 frames for more stability
 const REDUCED_BINS = 64; // Reduce feature count for better generalization
+let predictionHistory = []; // Buffer to smooth out inference noise
+const SMOOTHING_WINDOW = 15; // Number of frames to check for "majority vote"
 
 // ------------------- p5.js setup ------------------- //
 
@@ -356,14 +358,39 @@ function finishedTraining() {
 function handleClassification(error, results) {
   isClassifying = false;
   if (error || !isModelReady) return;
+
   if (results && results.length > 0) {
     const best = results[0];
-    if (best.confidence > 0.5) {
-      liveStateText.textContent = best.label;
-      liveStateText.style.color = 'var(--text-main)';
+    
+    // Add current prediction to history for smoothing
+    if (best.confidence > 0.4) {
+      predictionHistory.push(best.label);
     } else {
-      liveStateText.textContent = '---';
-      liveStateText.style.color = 'var(--text-muted)';
+      predictionHistory.push('---');
+    }
+
+    // Keep history at fixed size
+    if (predictionHistory.length > SMOOTHING_WINDOW) {
+      predictionHistory.shift();
+    }
+
+    // Calculate "Majority Vote" to eliminate flickering
+    const voteCounts = {};
+    let winner = '---';
+    let maxVotes = 0;
+
+    for (const label of predictionHistory) {
+      voteCounts[label] = (voteCounts[label] || 0) + 1;
+      if (voteCounts[label] > maxVotes) {
+        maxVotes = voteCounts[label];
+        winner = label;
+      }
+    }
+
+    // Update UI only if the winner is stable (majority of the window)
+    if (maxVotes >= (SMOOTHING_WINDOW * 0.6)) {
+      liveStateText.textContent = winner;
+      liveStateText.style.color = winner === '---' ? 'var(--text-muted)' : 'var(--text-main)';
     }
   }
 }
