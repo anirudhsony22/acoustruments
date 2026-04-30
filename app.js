@@ -24,8 +24,8 @@ let audioCtx = null;
 let audioStarted = false;
 let sweepInterval = null;
 
-const SWEEP_MIN = 12500;    // 12.5 kHz
-const SWEEP_MAX = 18000;    // 18.0 kHz
+const SWEEP_MIN = 5000;     // 5.0 kHz (Lowered to capture more resonance)
+const SWEEP_MAX = 19000;    // 19.0 kHz
 const SWEEP_DUR_SEC = 0.05; // 50ms per sweep
 
 // Feature extraction: only use bins in our sweep frequency range
