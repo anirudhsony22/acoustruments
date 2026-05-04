@@ -62,9 +62,10 @@ def _build_straight(r_out, r_in, wall, n_holes, hole_dia, length, cavity_dia, re
 
     # Acoustic holes
     if n_holes > 0:
-        pipe = _drill_holes(pipe, n_holes, hole_dia, r_out, r_in,
-                            positions=[(0, length/(n_holes+1)*(i+1)) for i in range(n_holes)],
-                            direction=(1,0,0), axis='x', res=res)
+        # Straight pipe is along Z axis, centered at (0,0,length/2)
+        # Positions along Z
+        hole_centers = [[(r_in + r_out) / 2, 0, length/(n_holes+1)*(i+1)] for i in range(n_holes)]
+        pipe = _drill_holes(pipe, hole_dia, r_out, r_in, hole_centers, direction=(1,0,0), res=res)
 
     # Optional Helmholtz bulb at the end
     if cavity_dia > r_out * 2:
@@ -102,16 +103,25 @@ def _build_elbow(r_out, r_in, wall, n_holes, hole_dia, cavity_dia, res, output):
     """
     SEP   = ADAPTER_SEPARATION      # 33mm
     arm_h = 10.0                    # arm height (vertical section)
-    bend_r = max(r_out * 2, 10.0)   # centreline bend radius
+    
+    # Optimize bend radius to allow more room for holes on the horizontal section
+    # Minimum radius is r_out, but we add a small margin for printing stability
+    bend_r = max(r_out + 2.0, 7.0)
     bottom_length = SEP - 2 * bend_r
 
+    if bottom_length < (n_holes * hole_dia + 2.0) and n_holes > 0:
+        # If holes won't fit, try to reduce bend radius further
+        print("Notice: Tightening bends to accommodate acoustic holes...")
+        bend_r = max(r_out + 1.0, 6.0)
+        bottom_length = SEP - 2 * bend_r
+        
     if bottom_length < 0:
-        # If adapters too close for the bend radius, reduce bend_r
         bend_r = SEP / 2 - 0.5
         bottom_length = SEP - 2 * bend_r
-        if bottom_length < 0:
-            bottom_length = 0
-            bend_r = SEP / 2
+
+    # Final check for overlapping holes
+    if n_holes > 0 and (n_holes * hole_dia) > bottom_length:
+        print(f"!!! WARNING: Holes (total {n_holes * hole_dia}mm) will overlap on the {bottom_length:.1f}mm segment.")
 
     bottom_y = -(arm_h + bend_r)    # Y coordinate of the horizontal section
     print(f"Arm height: {arm_h}mm, bend radius: {bend_r}mm, bottom length: {bottom_length:.1f}mm")
@@ -165,6 +175,35 @@ def _build_elbow(r_out, r_in, wall, n_holes, hole_dia, cavity_dia, res, output):
             b_inner = pv.Sphere(radius=cavity_dia/2 - wall, center=(bot_cx, bottom_y, 0), phi_resolution=res, theta_resolution=res).triangulate()
             bulb = b_outer.boolean_difference(b_inner).triangulate()
             bottom = bottom.merge([bulb])
+
+        # Acoustic holes in the bottom horizontal section
+        if n_holes > 0:
+            print(f"Drilling {n_holes} holes into outer side (bottom surface)...")
+            
+            # Reduce padding on outer sides of the holes
+            end_padding = max(2.0, hole_dia / 2 + 1.0) 
+            
+            if n_holes > 1:
+                inner_length = bottom_length - 2 * end_padding
+                # Ensure we don't have negative inner length
+                inner_length = max(0.1, inner_length)
+                hole_gap = inner_length / (n_holes - 1)
+                hx_start = bend_r + end_padding
+            else:
+                hx_start = bend_r + bottom_length / 2
+                hole_gap = 0
+                
+            hole_centers = []
+            for i in range(n_holes):
+                hx = hx_start + i * hole_gap
+                # Drill along Y axis (vertical cutter)
+                # Position the cutter to pass through the bottom wall
+                # Pipe center is at (hx, bottom_y, 0). 
+                # Bottom wall is centered at Y = bottom_y - (r_in + r_out)/2
+                hy = bottom_y - (r_in + r_out) / 2
+                hole_centers.append([hx, hy, 0])
+            
+            bottom = _drill_holes(bottom, hole_dia, r_out, r_in, hole_centers, direction=(0,1,0), res=res)
 
         parts.append(bottom)
 
@@ -328,16 +367,13 @@ def _make_socket(base_center, direction, r_pipe_out, r_pipe_in, res=40):
     return socket_body.merge([taper]).triangulate()
 
 
-def _drill_holes(mesh, n, dia, r_out, r_in, positions, direction, axis, res=24):
-    """Boolean-subtract cylindrical holes from a mesh."""
+def _drill_holes(mesh, dia, r_out, r_in, centers, direction, res=24):
+    """Boolean-subtract cylindrical holes from a mesh at specified centers."""
     r = dia / 2
     wall = r_out - r_in
-    for _, coord in positions:
-        center = [0, 0, 0]
-        center[{'x':0,'y':1,'z':2}[axis]] = (r_in + r_out) / 2
-        center[2] = coord  # Z position along pipe
+    for center in centers:
         cutter = pv.Cylinder(center=center, direction=direction,
-                             radius=r, height=wall*2+1, resolution=res).triangulate()
+                             radius=r, height=wall*2+2, resolution=res).triangulate()
         mesh = mesh.boolean_difference(cutter).triangulate()
     return mesh
 

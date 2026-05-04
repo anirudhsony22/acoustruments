@@ -14,6 +14,9 @@ const captureProgressBar = document.getElementById('captureProgressBar');
 const trainingLogText = document.getElementById('trainingLogText');
 const liveStateText = document.getElementById('liveStateText');
 const btnRecalibrate = document.getElementById('btnRecalibrate');
+const btnSaveModel = document.getElementById('btnSaveModel');
+const btnLoadModel = document.getElementById('btnLoadModel');
+const modelFileInput = document.getElementById('modelFileInput');
 
 // Audio (Native Web Audio API - bypasses p5.FFT to avoid master-output contamination)
 let osc;                    // p5.Oscillator for the sweep tone
@@ -268,6 +271,35 @@ function setupEvents() {
     isModelReady = false;
     stopAudioEngine();
     showScreen(screenWelcome);
+  });
+
+  // Save Model
+  btnSaveModel.addEventListener('click', () => {
+    if (nn) {
+      nn.save('acoustruments_model');
+    }
+  });
+
+  // Load Model
+  btnLoadModel.addEventListener('click', () => {
+    modelFileInput.click();
+  });
+
+  modelFileInput.addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (files.length >= 2) {
+      // Initialize Audio before loading so analyser is ready
+      await startAudioEngine();
+      
+      // Load the model files into ml5
+      nn.load(files, () => {
+        console.log('Model loaded successfully!');
+        isModelReady = true;
+        showScreen(screenLive);
+      });
+    } else {
+      alert('Please select all model files (usually .json, .bin, and _meta.json)');
+    }
   });
 }
 
